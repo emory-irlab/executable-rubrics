@@ -1,0 +1,580 @@
+You are given a JSON object containing fourteen human-written ArgQuality rubric axes used for evaluating argumentative text across the Dagstuhl-15512 ArgQuality corpus.
+
+Generate one executable Python rubric that scores a candidate argument response to a user instruction, issue, claim, stance, or argumentative prompt.
+
+Below are three exemplars of how natural language rubrics from other domains have been converted into their executable counterparts:
+
+Natural-language rubric:
+Helpfulness — Assesses whether the response is useful for the user's request and meaningfully advances the task.
+
+Executable rubric function:
+
+def score_helpfulness(query: str, text: str):
+    max_possible = 20
+    score = 0
+    reasons = []
+
+    q = (query or "").strip().lower()
+    t = (text or "").strip()
+    tl = t.lower()
+    q_words = set(re.findall(r"[a-z0-9][a-z0-9_-]{2,}", q))
+    t_words = set(re.findall(r"[a-z0-9][a-z0-9_-]{2,}", tl))
+    overlap = len(q_words & t_words) / max(1, len(q_words))
+    word_count = len(re.findall(r"\b\w+\b", t))
+
+    refusal_markers = [
+        "i can't", "i cannot", "i won’t", "i will not", "not able to", "unable to",
+        "as an ai", "i do not have access", "i don't have access",
+    ]
+    task_action_markers = [
+        "first", "second", "third", "steps", "example", "because", "therefore", "use",
+        "try", "recommend", "solution", "answer", "here", "below", "summary", "code",
+    ]
+    asks_for_code = bool(re.search(r"\b(code|python|script|function|class|program|sql|regex|bash|javascript)\b", q))
+    asks_for_list = bool(re.search(r"\b(list|examples|options|ideas|recommendations|compare|pros|cons)\b", q))
+    asks_for_short = bool(re.search(r"\b(short|brief|concise|one sentence|one-line|tl;dr|quick)\b", q))
+
+    if word_count >= 3:
+        score += 3
+        reasons.append("Response is non-empty and contains substantive content.")
+    else:
+        reasons.append("Response is empty or nearly empty.")
+
+    if overlap >= 0.20 or not q_words:
+        score += 4
+        reasons.append("Response uses key concepts from the prompt and appears task-relevant.")
+    elif overlap >= 0.08:
+        score += 2
+        reasons.append("Response has some topical overlap with the prompt.")
+    else:
+        reasons.append("Response has little lexical evidence of addressing the prompt.")
+
+    if any(marker in tl for marker in task_action_markers) or asks_for_short:
+        score += 4
+        reasons.append("Response appears to move the task forward rather than only acknowledging it.")
+    else:
+        reasons.append("Response gives limited evidence of directly advancing the user's task.")
+
+    if asks_for_code:
+        has_code_signal = bool(re.search(r"\b(def|class|import|return|for |while |if |try:|except|SELECT|function)\b", t))
+        if has_code_signal:
+            score += 3
+            reasons.append("Prompt appears to request code, and the response contains code-like content.")
+        else:
+            reasons.append("Prompt appears to request code, but the response lacks clear code-like content.")
+    elif asks_for_list:
+        has_list_signal = bool(re.search(r"(^|\n)\s*(-|\*|\d+[.)])\s+", t)) or ";" in t or "," in t
+        if has_list_signal:
+            score += 3
+            reasons.append("Prompt appears to request multiple items, and the response provides a structured set of items.")
+        else:
+            reasons.append("Prompt appears to request multiple items, but the response is not clearly structured as such.")
+    else:
+        score += 3
+        reasons.append("Response format is reasonably compatible with the prompt type.")
+
+    if any(marker in tl for marker in refusal_markers):
+        if re.search(r"\b(illegal|harm|unsafe|weapon|malware|fraud|privacy|medical emergency)\b", q):
+            score += 2
+            reasons.append("Response may appropriately refuse or limit unsafe/high-risk assistance.")
+        else:
+            score -= 3
+            reasons.append("Response contains refusal/access-limit language that may be unhelpful for an ordinary task.")
+    else:
+        score += 3
+        reasons.append("Response does not rely on unnecessary refusal or access-limit language.")
+
+    filler_patterns = [
+        r"^\s*(sure|okay|ok|got it)[.!\s]*$",
+        r"i hope this helps",
+        r"let me know if you (need|want)",
+        r"as an ai language model",
+    ]
+    filler_hits = sum(1 for pattern in filler_patterns if re.search(pattern, tl))
+    if filler_hits == 0:
+        score += 3
+        reasons.append("Response avoids obvious filler-only phrasing.")
+    else:
+        score -= min(3, filler_hits)
+        reasons.append("Response includes filler or boilerplate that reduces usefulness.")
+
+    score = max(0, min(max_possible, score))
+    return {"score": score, "max_possible": max_possible, "reasons": reasons}
+
+
+Natural-language rubric:
+Coherence — Assesses whether the response is clear, logically organized, internally consistent, and easy to follow.
+
+Executable rubric function:
+
+def score_coherence(query: str, text: str):
+    max_possible = 20
+    score = 0
+    reasons = []
+
+    t = (text or "").strip()
+    tl = t.lower()
+    sentences = [s.strip() for s in re.split(r"[.!?]+|\n+", t) if s.strip()]
+    words = re.findall(r"\b\w+\b", t)
+    word_count = len(words)
+    avg_sentence_len = word_count / max(1, len(sentences))
+
+    if word_count >= 5:
+        score += 3
+        reasons.append("Response has enough words to form a coherent answer.")
+    else:
+        reasons.append("Response is too short to demonstrate coherence.")
+
+    if 5 <= avg_sentence_len <= 35 or word_count < 20:
+        score += 4
+        reasons.append("Sentence length is generally readable.")
+    elif avg_sentence_len <= 55:
+        score += 2
+        reasons.append("Sentence length is somewhat long but still potentially readable.")
+    else:
+        score -= 2
+        reasons.append("Sentences are very long, which may hurt readability.")
+
+    has_structure = bool(re.search(r"(^|\n)\s*(-|\*|\d+[.)])\s+\S+", t)) or len(sentences) >= 2 or ":" in t
+    if has_structure:
+        score += 4
+        reasons.append("Response has visible structure or multiple coherent units.")
+    else:
+        reasons.append("Response has little visible structure.")
+
+    transition_markers = [
+        "because", "therefore", "however", "also", "first", "second", "finally", "for example",
+        "in contrast", "so", "then", "instead", "while", "if", "when",
+    ]
+    if any(marker in tl for marker in transition_markers):
+        score += 3
+        reasons.append("Response uses connective language that supports logical flow.")
+    elif word_count < 25:
+        score += 2
+        reasons.append("Short response can remain coherent without explicit transitions.")
+    else:
+        reasons.append("Response has limited connective language for its length.")
+
+    malformed_signals = ["????", "!!!!", "... ...", "asdf", "lorem ipsum", "undefined undefined"]
+    if not any(signal in tl for signal in malformed_signals):
+        score += 3
+        reasons.append("Response avoids obvious malformed or placeholder text.")
+    else:
+        score -= 3
+        reasons.append("Response contains malformed or placeholder text.")
+
+    repeated_lines = len(sentences) - len(set(s.lower() for s in sentences))
+    if repeated_lines == 0:
+        score += 3
+        reasons.append("Response avoids repeated sentence-level content.")
+    else:
+        score -= min(3, repeated_lines)
+        reasons.append("Response repeats sentence-level content, reducing coherence.")
+
+    score = max(0, min(max_possible, score))
+    return {"score": score, "max_possible": max_possible, "reasons": reasons}
+
+
+Natural-language rubric:
+Correctness — Assesses whether the response is factually accurate and free of substantive mistakes.
+
+Executable rubric function:
+
+def score_correctness(query: str, text: str):
+    max_possible = 20
+    score = 0
+    reasons = []
+
+    q = (query or "").strip().lower()
+    t = (text or "").strip()
+    tl = t.lower()
+    word_count = len(re.findall(r"\b\w+\b", t))
+    factual_prompt = bool(re.search(r"\b(what|who|when|where|why|how many|explain|define|is it true|fact|source|cite|compare|difference|best|latest|current)\b", q))
+    code_prompt = bool(re.search(r"\b(code|python|script|function|class|program|sql|regex|bash|javascript|bug|error|traceback)\b", q))
+    high_risk_prompt = bool(re.search(r"\b(medical|health|legal|visa|immigration|financial|investment|tax|safety|security)\b", q))
+
+    uncertainty_markers = [
+        "may", "might", "can", "could", "typically", "usually", "in general",
+        "depends", "check", "verify", "not sure", "uncertain",
+    ]
+    overclaim_markers = [
+        "always", "never", "guaranteed", "definitely", "certainly", "100%", "no doubt",
+        "everyone knows", "impossible unless",
+    ]
+    unsupported_current_markers = ["latest", "currently", "today", "now", "as of", "recently", "this year"]
+
+    if word_count >= 3:
+        score += 3
+        reasons.append("Response contains enough content to evaluate for correctness.")
+    else:
+        reasons.append("Response is too short to establish correctness.")
+
+    if not re.search(r"\b([a-z]+)\b(?:\W+\1\b){3,}", tl):
+        score += 3
+        reasons.append("Response does not show obvious repetitive corruption.")
+    else:
+        score -= 3
+        reasons.append("Response contains repeated wording that suggests low reliability.")
+
+    if not any(marker in tl for marker in overclaim_markers):
+        score += 4
+        reasons.append("Response avoids strong absolute claims that often signal overstatement.")
+    else:
+        score -= 2
+        reasons.append("Response uses absolute language that may overstate certainty.")
+
+    if factual_prompt or high_risk_prompt:
+        if any(marker in tl for marker in uncertainty_markers) or re.search(r"\b(source|evidence|according to|verify|consult|check)\b", tl):
+            score += 4
+            reasons.append("For a factual or high-stakes prompt, the response includes appropriate caution or verification language.")
+        elif word_count < 30:
+            score += 1
+            reasons.append("For a factual or high-stakes prompt, the response is brief and gives little support for its claims.")
+        else:
+            score += 2
+            reasons.append("For a factual or high-stakes prompt, the response gives some answer but limited visible grounding.")
+    else:
+        score += 4
+        reasons.append("Prompt does not strongly require external factual grounding, so internal plausibility is the main correctness signal.")
+
+    if code_prompt:
+        balanced = t.count("(") == t.count(")") and t.count("[") == t.count("]") and t.count("{") == t.count("}")
+        if balanced and not re.search(r"\b(TODO|pass\s*(#|$)|your code here|placeholder)\b", t):
+            score += 4
+            reasons.append("Code-oriented response has balanced delimiters and avoids obvious placeholders.")
+        else:
+            score -= 2
+            reasons.append("Code-oriented response has likely syntax/placeholder issues.")
+    else:
+        score += 2
+        reasons.append("No code-specific correctness constraints detected.")
+
+    if any(marker in q for marker in unsupported_current_markers):
+        if re.search(r"\b(as of|current|latest|verify|check|source|date)\b", tl):
+            score += 2
+            reasons.append("Prompt appears time-sensitive, and the response signals date/currentness awareness.")
+        else:
+            score -= 2
+            reasons.append("Prompt appears time-sensitive, but the response does not signal date/currentness awareness.")
+    else:
+        score += 2
+        reasons.append("Prompt does not appear strongly time-sensitive.")
+
+    contradictions = [
+        ("yes", "no"),
+        ("true", "false"),
+        ("increase", "decrease"),
+        ("safe", "dangerous"),
+        ("required", "optional"),
+    ]
+    contradiction_hits = sum(1 for a, b in contradictions if re.search(r"\b" + a + r"\b", tl) and re.search(r"\b" + b + r"\b", tl))
+    if contradiction_hits == 0:
+        score += 2
+        reasons.append("No simple internal contradiction markers were detected.")
+    else:
+        score -= min(4, 2 * contradiction_hits)
+        reasons.append("Response contains simple opposing claims that may indicate inconsistency.")
+
+    score = max(0, min(max_possible, score))
+    return {"score": score, "max_possible": max_possible, "reasons": reasons}
+
+The generated rubric must define exactly fifteen functions:
+
+1. One top-level scoring function:
+
+def score_response(query: str, text: str):
+
+2. Fourteen axis-specific rubric functions, one for each ArgQuality dimension:
+
+def score_cogency(query: str, text: str):
+def score_local_acceptability(query: str, text: str):
+def score_local_relevance(query: str, text: str):
+def score_local_sufficiency(query: str, text: str):
+def score_effectiveness(query: str, text: str):
+def score_credibility(query: str, text: str):
+def score_emotional_appeal(query: str, text: str):
+def score_clarity(query: str, text: str):
+def score_appropriateness(query: str, text: str):
+def score_arrangement(query: str, text: str):
+def score_reasonableness(query: str, text: str):
+def score_global_acceptability(query: str, text: str):
+def score_global_relevance(query: str, text: str):
+def score_global_sufficiency(query: str, text: str):
+
+The top-level score_response function must call the fourteen axis-specific functions and sum their scores.
+
+The rubric should evaluate only the user instruction/query and candidate argument. Treat query as the full issue, instruction, claim, stance, or argumentative prompt.
+
+Return only Python code.
+Do not include markdown fences or prose.
+
+Input format:
+You need to convert the following natural-language human-written rubrics into a list of executable rubric functions:
+
+{
+  "source": {
+    "paper": "Computational Argumentation Quality Assessment in Natural Language",
+    "authors": "Henning Wachsmuth, Nona Naderi, Yufang Hou, Yonatan Bilu, Vinodkumar Prabhakaran, Tim Alberdingk Thijm, Graeme Hirst, Benno Stein",
+    "note": "These are the 14 argumentation quality dimensions used in the Dagstuhl-15512 ArgQuality corpus; definitions are paraphrased from the taxonomy in Section 3.2."
+  },
+  "count_axes": 14,
+  "axes": [
+    {
+      "id": "cogency",
+      "axis": "Cogency",
+      "definition": "Assesses whether an argument has acceptable premises that are relevant to its conclusion and sufficient to justify drawing that conclusion."
+    },
+    {
+      "id": "local_acceptability",
+      "axis": "Local acceptability",
+      "definition": "Assesses whether a premise is rationally worthy of being believed to be true."
+    },
+    {
+      "id": "local_relevance",
+      "axis": "Local relevance",
+      "definition": "Assesses whether a premise contributes to accepting or rejecting the argument's conclusion."
+    },
+    {
+      "id": "local_sufficiency",
+      "axis": "Local sufficiency",
+      "definition": "Assesses whether the premises, taken together, provide enough support to make it rational to draw the argument's conclusion."
+    },
+    {
+      "id": "effectiveness",
+      "axis": "Effectiveness",
+      "definition": "Assesses whether the argumentation persuades the target audience of, or strengthens agreement with, the author's stance on the issue."
+    },
+    {
+      "id": "credibility",
+      "axis": "Credibility",
+      "definition": "Assesses whether the argumentation presents arguments and related material in a way that makes the author appear worthy of credence."
+    },
+    {
+      "id": "emotional_appeal",
+      "axis": "Emotional appeal",
+      "definition": "Assesses whether the argumentation creates emotions in a way that makes the target audience more open to the author's arguments."
+    },
+    {
+      "id": "clarity",
+      "axis": "Clarity",
+      "definition": "Assesses whether the argumentation uses correct and widely unambiguous language, avoids unnecessary complexity, and stays focused on the issue."
+    },
+    {
+      "id": "appropriateness",
+      "axis": "Appropriateness",
+      "definition": "Assesses whether the language style supports credibility and emotional appeal and is proportional to the issue being discussed."
+    },
+    {
+      "id": "arrangement",
+      "axis": "Arrangement",
+      "definition": "Assesses whether the argumentation presents the issue, arguments, and conclusion in an appropriate order."
+    },
+    {
+      "id": "reasonableness",
+      "axis": "Reasonableness",
+      "definition": "Assesses whether the argumentation contributes to resolving the issue in a sufficient way that is acceptable to the target audience."
+    },
+    {
+      "id": "global_acceptability",
+      "axis": "Global acceptability",
+      "definition": "Assesses whether the target audience accepts both the consideration of the stated arguments for the issue and the way those arguments are stated."
+    },
+    {
+      "id": "global_relevance",
+      "axis": "Global relevance",
+      "definition": "Assesses whether the argumentation contributes to resolving the issue by stating arguments or other information that help arrive at an ultimate conclusion."
+    },
+    {
+      "id": "global_sufficiency",
+      "axis": "Global sufficiency",
+      "definition": "Assesses whether the argumentation adequately rebuts anticipated counterarguments."
+    }
+  ]
+}
+
+The generated executable rubric must satisfy the following interface:
+
+def score_response(query: str, text: str):
+    ...
+
+It must return a dictionary with exactly these keys:
+- "score"
+- "max_possible"
+- "normalized_score"
+- "reasons"
+
+Each of the fourteen axis-specific functions should return a dictionary with:
+- "score"
+- "max_possible"
+- "reasons"
+
+The top-level score_response function should:
+1. Call all fourteen axis-specific rubric functions.
+2. Sum their "score" values.
+3. Sum their "max_possible" values.
+4. Compute normalized_score as score / max_possible.
+5. Concatenate or group the reasons from all fourteen axis functions.
+6. Return the final dictionary.
+
+Requirements:
+1. The same rubric must apply to any ArgQuality query-argument pair.
+2. Use only deterministic Python logic. No file I/O, no network calls, no external APIs, and no LLM calls.
+3. Do not rely on intermediate conversations. Only use query and text.
+4. Reward clear claims, relevant premises, acceptable premises, sufficient support, credible wording, appropriate emotional appeal, coherent arrangement, reasonable framing, issue relevance, and counterargument handling.
+5. Penalize unsupported assertions, irrelevant premises, false or implausible claims, weak evidence, circular reasoning, strawman arguments, ad hominem attacks, excessive emotional manipulation, unclear wording, disorganized structure, off-topic content, and failure to address the issue or stance.
+6. Use partial credit within each axis.
+7. max_possible must be a single numeric literal in score_response equal to the sum of positive points from the fourteen axis functions.
+8. Each axis-specific max_possible must also be a numeric literal.
+9. normalized_score must be score / max_possible.
+10. The rubric should be general enough to transfer across the ArgQuality corpus while still being specific enough to separate better and worse arguments.
+11. Encode important dependencies with explicit if/else logic. For example:
+    - If the query contains an issue or stance, reward arguments that clearly address that issue or stance.
+    - If the response makes a conclusion, reward premises that are relevant to that conclusion.
+    - If the response contains several premises, reward diversity and sufficiency of support rather than repetition.
+    - If the argument makes strong factual claims, reward cautious wording, evidence markers, examples, statistics, or source-like support.
+    - If the issue is controversial, reward acknowledgement of tradeoffs and anticipated counterarguments.
+    - If the response uses emotional language, reward proportional and audience-appropriate emotion but penalize fearmongering, insults, or manipulation.
+    - If the argument has no identifiable conclusion, penalize cogency, arrangement, local relevance, and global relevance.
+    - If the argument is mostly off-topic, strongly penalize global relevance, local relevance, effectiveness, and reasonableness.
+12. Feel free to use regexes, dictionaries, or other Python objects necessary to expand coverage. Ensure that when you define strings as part of lists, sets, dictionaries, etc., they do not only match exact variants.
+13. Be careful not to overmatch, as that might wrongly assign similar scores to adversarial or bad arguments.
+14. Clamp each axis score between 0 and that axis's max_possible.
+15. Clamp the final score between 0 and the final max_possible.
+
+Benchmark-specific emphasis:
+- Prioritize argument quality rather than factual domain expertise.
+- Reward arguments that contain a clear conclusion, identifiable premises, and a logical relationship between premises and conclusion.
+- Reward premises that are plausible, relevant, non-circular, and sufficient to support the stance.
+- Reward arguments that address the issue in the query rather than switching topics.
+- Reward credible, measured, and audience-aware style.
+- Reward emotionally engaging language only when it supports the argument without replacing evidence.
+- Reward coherent structure: issue framing, premises, support, counterargument or limitation where useful, and conclusion.
+- Reward reasonable handling of opposing views, tradeoffs, exceptions, or anticipated objections.
+- Penalize insults, profanity, exaggeration, unsupported absolutes, purely emotional appeals, vague generalities, repetition, and missing conclusions.
+- Penalize arguments that merely restate the stance without giving reasons.
+
+Scoring design:
+- The fourteen axis-specific rubric functions should each have their own positive-point criteria.
+- The top-level score should be the sum of:
+  - Cogency score
+  - Local acceptability score
+  - Local relevance score
+  - Local sufficiency score
+  - Effectiveness score
+  - Credibility score
+  - Emotional appeal score
+  - Clarity score
+  - Appropriateness score
+  - Arrangement score
+  - Reasonableness score
+  - Global acceptability score
+  - Global relevance score
+  - Global sufficiency score
+- Negative penalties may be applied inside individual axis functions, but max_possible must count only positive points.
+- Clamp each axis score between 0 and that axis's max_possible.
+- Clamp the final score between 0 and the final max_possible.
+
+Expected structure:
+
+def score_cogency(query: str, text: str):
+    ...
+
+def score_local_acceptability(query: str, text: str):
+    ...
+
+def score_local_relevance(query: str, text: str):
+    ...
+
+def score_local_sufficiency(query: str, text: str):
+    ...
+
+def score_effectiveness(query: str, text: str):
+    ...
+
+def score_credibility(query: str, text: str):
+    ...
+
+def score_emotional_appeal(query: str, text: str):
+    ...
+
+def score_clarity(query: str, text: str):
+    ...
+
+def score_appropriateness(query: str, text: str):
+    ...
+
+def score_arrangement(query: str, text: str):
+    ...
+
+def score_reasonableness(query: str, text: str):
+    ...
+
+def score_global_acceptability(query: str, text: str):
+    ...
+
+def score_global_relevance(query: str, text: str):
+    ...
+
+def score_global_sufficiency(query: str, text: str):
+    ...
+
+def score_response(query: str, text: str):
+    cogency = score_cogency(query, text)
+    local_acceptability = score_local_acceptability(query, text)
+    local_relevance = score_local_relevance(query, text)
+    local_sufficiency = score_local_sufficiency(query, text)
+    effectiveness = score_effectiveness(query, text)
+    credibility = score_credibility(query, text)
+    emotional_appeal = score_emotional_appeal(query, text)
+    clarity = score_clarity(query, text)
+    appropriateness = score_appropriateness(query, text)
+    arrangement = score_arrangement(query, text)
+    reasonableness = score_reasonableness(query, text)
+    global_acceptability = score_global_acceptability(query, text)
+    global_relevance = score_global_relevance(query, text)
+    global_sufficiency = score_global_sufficiency(query, text)
+
+    score = (
+        cogency["score"]
+        + local_acceptability["score"]
+        + local_relevance["score"]
+        + local_sufficiency["score"]
+        + effectiveness["score"]
+        + credibility["score"]
+        + emotional_appeal["score"]
+        + clarity["score"]
+        + appropriateness["score"]
+        + arrangement["score"]
+        + reasonableness["score"]
+        + global_acceptability["score"]
+        + global_relevance["score"]
+        + global_sufficiency["score"]
+    )
+
+    max_possible = <single numeric literal>
+
+    score = max(0, min(score, max_possible))
+
+    return {
+        "score": score,
+        "max_possible": max_possible,
+        "normalized_score": score / max_possible if max_possible else 0.0,
+        "reasons": {
+            "cogency": cogency["reasons"],
+            "local_acceptability": local_acceptability["reasons"],
+            "local_relevance": local_relevance["reasons"],
+            "local_sufficiency": local_sufficiency["reasons"],
+            "effectiveness": effectiveness["reasons"],
+            "credibility": credibility["reasons"],
+            "emotional_appeal": emotional_appeal["reasons"],
+            "clarity": clarity["reasons"],
+            "appropriateness": appropriateness["reasons"],
+            "arrangement": arrangement["reasons"],
+            "reasonableness": reasonableness["reasons"],
+            "global_acceptability": global_acceptability["reasons"],
+            "global_relevance": global_relevance["reasons"],
+            "global_sufficiency": global_sufficiency["reasons"],
+        },
+    }
+
+Generate the complete Python rubric now.
